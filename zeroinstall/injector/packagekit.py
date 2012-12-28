@@ -298,9 +298,11 @@ class _PackageKitTransaction(object):
 		self.files = {}
 
 		try:
-			tid = pk.CreateTransaction()
-		except dbus.exceptions.DBusException:
+			# Put this first in case Ubuntu's aptdaemon doesn't like
+			# CreateTransaction.
 			tid = pk.GetTid()
+		except dbus.exceptions.DBusException:
+			tid = pk.CreateTransaction()
 
 		self.object = dbus.SystemBus().get_object(
 				'org.freedesktop.PackageKit', tid, False)
