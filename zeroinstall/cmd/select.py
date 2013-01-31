@@ -32,11 +32,23 @@ def add_generic_select_options(parser):
 	parser.add_option("", "--version", help=_("specify version contraint (e.g. '3' or '3..')"), metavar='RANGE')
 	parser.add_option("", "--version-for", help=_("set version constraints for a specific interface"),
 			nargs=2, metavar='URI RANGE', action='append')
+	parser.add_option("", "--no-plugins", action='store_true', help=_("ignore all configured plugins"))
+	parser.add_option("", "--plugins-for", help=_("use configured plugins for INTERFACE"), metavar='INTERFACE',
+		dest='plugin_uri')
+	parser.add_option("", "--with-plugin", help=_("add a plugin to be used this time only"), metavar='INTERFACE',
+			action='append', dest='additional_plugins', default=[])
+	parser.add_option("", "--without-plugin", help=_("ignore a plugin (this time only)"), metavar='INTERFACE',
+			action='append', dest='ignored_plugins', default=[])
 
 def add_options(parser):
 	"""Options for 'select' and 'download' (but not 'run')"""
 	add_generic_select_options(parser)
 	parser.add_option("", "--xml", help=_("write selected versions as XML"), action='store_true')
+
+def get_requirements(iface_uri, options):
+	requirements = Requirements(iface_uri)
+	requirements.parse_options(options)
+	return requirements
 
 def get_selections(config, options, iface_uri, select_only, download_only, test_callback, requirements = None):
 	"""Get selections for iface_uri, according to the options passed.
@@ -67,8 +79,7 @@ def get_selections(config, options, iface_uri, select_only, download_only, test_
 		return maybe_selections
 
 	if requirements is None:
-		requirements = Requirements(iface_uri)
-		requirements.parse_options(options)
+		requirements = get_requirements(iface_uri, options)
 
 	return get_selections_for(requirements, config, options, select_only, download_only, test_callback)
 
@@ -175,7 +186,7 @@ def handle(config, options, args):
 			print()
 	else:
 		iface_uri = model.canonical_iface_uri(args[0])
-		requirements = None
+		requirements = get_requirements(iface_uri, options)
 		changes = False
 
 	sels = get_selections(config, options, iface_uri,
@@ -186,9 +197,10 @@ def handle(config, options, args):
 	if options.xml:
 		show_xml(sels)
 	else:
-		show_human(sels, config.stores)
+		show_human(requirements, sels, config.stores)
 		if app is not None:
 			from zeroinstall.cmd import whatchanged
+			#TODO... plugins?
 			changes = whatchanged.show_changes(old_sels.selections, sels.selections) or changes
 			if changes:
 				print(_("(note: use '0install update' instead to save the changes)"))
@@ -198,7 +210,7 @@ def show_xml(sels):
 	doc.writexml(sys.stdout)
 	sys.stdout.write('\n')
 
-def show_human(sels, stores):
+def show_human(requirements, sels, stores):
 	done = set()	# detect cycles
 	def print_node(uri, commands, indent):
 		if uri in done: return
@@ -228,6 +240,9 @@ def show_human(sels, stores):
 		print_node(sels.interface, [sels.command], "")
 	else:
 		print_node(sels.interface, [], "")
+	
+	for plugin in requirements.plugins:
+		print_node(plugin.url, [], "")
 
 def complete(completion, args, cword):
 	if len(args) != 1 or cword != 0: return

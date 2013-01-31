@@ -6,6 +6,7 @@ Holds information about what the user asked for (which program, version constrai
 # See the README file for details, or visit http://0install.net.
 
 from zeroinstall import SafeException
+from zeroinstall.plugins import Plugin, FeedPlugins
 
 class Requirements(object):
 	"""
@@ -20,6 +21,7 @@ class Requirements(object):
 		'extra_restrictions',		# {str: str} (iface -> range)
 		'os', 'cpu',
 		'message',
+		'_plugins',
 	]
 
 	def __init__(self, interface_uri):
@@ -29,6 +31,13 @@ class Requirements(object):
 		self.os = self.cpu = None
 		self.message = None
 		self.extra_restrictions = {}
+		self._plugins = set()
+	
+	#TODO: this is all a bit awkward to get around not having a public
+	# property for the case of serialization
+	@property
+	def plugins(self):
+		return self._plugins
 
 	def parse_options(self, options):
 		self.extra_restrictions = self._handle_restrictions(options)
@@ -51,6 +60,19 @@ class Requirements(object):
 				self.command = 'run'
 		else:
 			self.command = options.command or None
+
+		self._populate_plugins(options)
+
+	def _populate_plugins(self, options):
+		if options.no_plugins:
+			return
+
+		plugin_uri = options.plugin_uri or self.interface_uri
+		self._plugins = set(FeedPlugins.load(plugin_uri).plugins)
+		for additional_uri in options.additional_plugins:
+			self._plugins.add(Plugin.create(additional_uri))
+		if options.ignored_plugins:
+			self._plugins.difference_update(options.ignored_plugins)
 
 	def parse_update_options(self, options):
 		"""Update the settings based on the options (used for "0install update APP").
@@ -101,6 +123,7 @@ class Requirements(object):
 			gui_args.insert(0, '--os')
 		gui_args.append('--command')
 		gui_args.append(self.command or '')
+		#TODO (NOCOMMIT): plugins
 
 		return gui_args
 

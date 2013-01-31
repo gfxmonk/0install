@@ -144,13 +144,13 @@ class SATSolver(Solver):
 	@ivar langs: the preferred languages (e.g. ["es_ES", "en"]). Initialised to the current locale.
 	@type langs: str"""
 
-	__slots__ = ['_impls_for_iface', '_iface_to_vars', '_problem', 'config', 'extra_restrictions', '_lang_ranks', '_langs']
+	__slots__ = ['_impls_for_iface', '_iface_to_vars', '_problem', 'config', 'extra_restrictions', '_lang_ranks', '_langs', '_plugins']
 
 	@property
 	def iface_cache(self):
 		return self.config.iface_cache	# (deprecated; used by 0compile)
 
-	def __init__(self, config, extra_restrictions = None):
+	def __init__(self, config, extra_restrictions = None, requirements = None):
 		"""
 		@param config: policy preferences (e.g. stability), the iface_cache and the stores to use
 		@type config: L{policy.Config}
@@ -161,6 +161,7 @@ class SATSolver(Solver):
 		assert not isinstance(config, str), "API change!"
 		self.config = config
 		self.extra_restrictions = extra_restrictions or {}
+		self._plugins = requirements.plugins if requirements else set()
 
 		# By default, prefer the current locale's language first and English second
 		self.langs = [locale.getlocale()[0] or 'en', 'en']
@@ -454,6 +455,13 @@ class SATSolver(Solver):
 
 		replacement_for = {}		# Interface -> Replacement Interface
 
+		def add_plugin_dependencies():
+			"""Add all plugins from requirements"""
+			for plugin in self._plugins:
+				uri = plugin.url
+				if uri in ifaces_processed: continue
+				add_iface(uri, arch=root_arch) #TODO: is this arch right?
+
 		def add_iface(uri, arch):
 			"""Name implementations from feed and assert that only one can be selected."""
 			if uri in ifaces_processed: return
@@ -620,6 +628,8 @@ class SATSolver(Solver):
 
 				problem.impossible()
 
+		add_plugin_dependencies()
+
 		# Require m<group> to be true if we select an implementation in that group
 		m_groups = []
 		for machine_group, impls in impls_for_machine_group.items():
@@ -722,6 +732,11 @@ class SATSolver(Solver):
 			best = find_undecided_command(root_interface, command_name)
 			if best is not None:
 				return best
+
+			for plugin in self._plugins:
+				best = find_undecided(plugin.url)
+				if best is not None:
+					return best
 
 			# If we're chosen everything we need, we can probably
 			# set everything else to False.
@@ -969,7 +984,7 @@ class SATSolver(Solver):
 
 		restrictions = self.extra_restrictions.copy()
 		restrictions[iface] = restrictions.get(iface, []) + [_ForceImpl(impl)]
-		s = SATSolver(self.config, restrictions)
+		s = SATSolver(self.config, restrictions, requirements)
 		s.record_details = True
 		s.solve_for(requirements)
 

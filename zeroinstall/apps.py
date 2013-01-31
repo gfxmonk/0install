@@ -272,7 +272,7 @@ class App:
 			import json
 			tmp = tempfile.NamedTemporaryFile(prefix = 'tmp-requirements-', dir = self.path, delete = False, mode = 'wt')
 			try:
-				json.dump(dict((key, getattr(requirements, key)) for key in requirements.__slots__), tmp)
+				json.dump(dict((key, getattr(requirements, key)) for key in requirements.__slots__ if not key.startswith('_')), tmp)
 			except:
 				tmp.close()
 				os.unlink(tmp.name)

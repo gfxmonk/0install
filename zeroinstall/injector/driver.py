@@ -51,7 +51,7 @@ class Driver(object):
 		self.target_arch = arch.get_architecture(requirements.os, requirements.cpu)
 
 		from zeroinstall.injector.solver import DefaultSolver
-		self.solver = DefaultSolver(self.config)
+		self.solver = DefaultSolver(self.config, requirements=requirements)
 
 		logger.debug(_("Supported systems: '%s'"), arch.os_ranks)
 		logger.debug(_("Supported processors: '%s'"), arch.machine_ranks)
