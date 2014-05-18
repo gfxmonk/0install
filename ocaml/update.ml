@@ -20,7 +20,6 @@ let get_newest options feed_provider reqs =
   let module I = Zeroinstall.Impl_provider in
   let (scope_filter, _root_key) = Zeroinstall.Solver.get_root_requirements options.config reqs in
   let impl_provider = new I.default_impl_provider options.config feed_provider scope_filter in
-  let get_impls = impl_provider#get_implementations reqs.R.interface_uri in
 
   let best = ref None in
   let check_best items =
@@ -31,15 +30,9 @@ let get_newest options feed_provider reqs =
       | Some _ -> ()
     ) in
 
-  let candidates = get_impls ~source:reqs.R.source in
+  let candidates = impl_provider#get_implementations reqs.R.interface_uri in
   check_best candidates.I.impls;
   check_best @@ List.map fst candidates.I.rejects;
-  if not reqs.R.source then (
-    (* Also report newer source versions *)
-    let candidates = get_impls ~source:true in
-    check_best candidates.I.impls;
-    check_best @@ List.map fst candidates.I.rejects
-  );
   !best
 
 let check_replacement system = function

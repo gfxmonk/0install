@@ -117,8 +117,8 @@ let have_source_for feed_provider iface =
   )
 
 let list_impls (results:Solver.result) iface =
-  let make_list ~source selected_impl =
-    let candidates = results#impl_provider#get_implementations iface ~source in
+  let make_list selected_impl =
+    let candidates = results#impl_provider#get_implementations iface in
 
     let by_version (a,_) (b,_) = compare b.F.parsed_version a.F.parsed_version in
 
@@ -129,12 +129,7 @@ let list_impls (results:Solver.result) iface =
 
     Some (selected_impl, all_impls) in
 
-  match results#get_selected ~source:true iface with
-  | Some _ as source_impl -> make_list ~source:true source_impl
-  | None ->
-      match results#get_selected ~source:false iface with
-      | Some _ as bin_impl -> make_list ~source:false bin_impl
-      | None -> make_list ~source:false None
+  make_list (results#get_selected iface)
 
 (** Download an icon for this feed and add it to the
     icon cache. If the feed has no icon do nothing. *)

@@ -168,21 +168,16 @@ module type CACHE_ENTRY =
 
 module CommandIfaceEntry =
   struct
-    type t = (string * iface_uri * bool)
+    type t = (string * iface_uri)
     type value = command_candidates
     let compare = compare
   end
 
 module IfaceEntry =
   struct
-    type t = (iface_uri * bool)
+    type t = iface_uri
     type value = impl_candidates
-
-    (* Sort the interfaces by URI so we have a stable output. *)
-    let compare (ib, sb) (ia, sa) =
-      match compare ia ib with
-      | 0 -> compare sa sb
-      | x -> x
+    let compare = compare
   end
 
 module Cache(CacheEntry : CACHE_ENTRY) :
@@ -246,10 +241,10 @@ type requirements =
 class type result =
   object
     method get_selections : Selections.t
-    method get_selected : source:bool -> General.iface_uri -> Feed.generic_implementation option
+    method get_selected : General.iface_uri -> Feed.generic_implementation option
     method impl_provider : Impl_provider.impl_provider
     method impl_provider : Impl_provider.impl_provider
-    method implementations : ((General.iface_uri * bool) * (S.lit * Feed.generic_implementation) option) list
+    method implementations : (General.iface_uri * (S.lit * Feed.generic_implementation) option) list
     method requirements : requirements
   end
 
@@ -262,11 +257,11 @@ let explain = S.explain_reason
 let get_selections dep_in_use root_req impls commands =
   (* For each implementation, remember which commands we need. *)
   let commands_needed = Hashtbl.create 10 in
-  let check_command ((command_name, iface, _source), _) =
+  let check_command ((command_name, iface), _) =
     Hashtbl.add commands_needed iface command_name in
   List.iter check_command commands;
 
-  let selections = impls |> U.filter_map (fun ((iface, _source), impls) ->
+  let selections = impls |> U.filter_map (fun (iface, impls) ->
     match impls#get_selected with
     | None -> None      (* This interface wasn't used *)
     | Some (_lit, impl) ->
@@ -335,10 +330,10 @@ let get_selections dep_in_use root_req impls commands =
 
   let root_attrs =
     match root_req with
-    | ReqCommand (command, iface, _source) ->
+    | ReqCommand (command, iface) ->
         AttrMap.singleton "interface" iface
         |> AttrMap.add_no_ns "command" command
-    | ReqIface (iface, _source) ->
+    | ReqIface (iface) ->
         AttrMap.singleton "interface" iface in
   ZI.make ~attrs:root_attrs ~child_nodes:(List.rev selections) "selections"
 
@@ -346,8 +341,8 @@ let get_selections dep_in_use root_req impls commands =
  * We do this at the end because if we didn't use the replacement feed, there's no need to conflict
  * (avoids getting it added to feeds_used). *)
 let add_replaced_by_conflicts sat impl_clauses =
-  List.iter (fun (source, clause, replacement) ->
-    ImplCache.get (replacement, source) impl_clauses
+  List.iter (fun (clause, replacement) ->
+    ImplCache.get replacement impl_clauses
     |> if_some (fun replacement_candidates ->
       (* Our replacement was also added to [sat], so conflict with it. *)
       let our_vars = clause#get_real_vars in
@@ -393,7 +388,7 @@ let process_self_binding sat lookup_command user_var dep_iface binding =
   |> pipe_some Binding.get_command
   |> if_some (fun name ->
     (* Note: we only call this for self-bindings, so we could be efficient by selecting the exact command here... *)
-    let candidates = lookup_command (name, dep_iface, false) in
+    let candidates = lookup_command (name, dep_iface) in
     S.implies sat ~reason:"binding on command" user_var candidates#get_vars
   )
 
@@ -406,12 +401,12 @@ let process_dep sat lookup_impl lookup_command user_var dep =
   (* Restrictions on the candidates *)
   let meets_restriction impl r = impl.Feed.parsed_version = Versions.dummy || r#meets_restriction impl in
   let meets_restrictions impl = List.for_all (meets_restriction impl) dep.Feed.dep_restrictions in
-  let candidates = lookup_impl (dep.Feed.dep_iface, false) in
+  let candidates = lookup_impl dep.Feed.dep_iface in
   let pass, fail = candidates#partition meets_restrictions in
 
   (* Dependencies on commands *)
   dep.Feed.dep_required_commands |> List.iter (fun name ->
-    let candidates = lookup_command (name, dep.Feed.dep_iface, false) in
+    let candidates = lookup_command (name, dep.Feed.dep_iface) in
 
     if dep.Feed.dep_importance = Feed.Dep_essential then (
       S.implies sat ~reason:"dep on command" user_var candidates#get_vars
@@ -438,8 +433,8 @@ let process_dep sat lookup_impl lookup_command user_var dep =
   )
 
 (* Add the implementations of an interface to the ImplCache (called the first time we visit it). *)
-let make_impl_clause sat ~closest_match replacements impl_provider iface_uri ~source =
-  let {Impl_provider.replacement; impls; rejects = _} = impl_provider#get_implementations iface_uri ~source in
+let make_impl_clause sat ~closest_match replacements impl_provider iface_uri =
+  let {Impl_provider.replacement; impls; rejects = _} = impl_provider#get_implementations iface_uri in
 
   (* Insert dummy_impl (last) if we're trying to diagnose a problem. *)
   let impls =
@@ -457,15 +452,15 @@ let make_impl_clause sat ~closest_match replacements impl_provider iface_uri ~so
   (* If we have a <replaced-by>, remember to add a conflict with our replacement *)
   replacement |> if_some (fun replacement ->
     if replacement = iface_uri then log_warning "Interface %s replaced-by itself!" iface_uri
-    else replacements := (source, clause, replacement) :: !replacements;
+    else replacements := (clause, replacement) :: !replacements;
   );
 
   clause, impls
 
 (* Create a new CommandCache entry (called the first time we request this key). *)
 let make_commands_clause sat lookup_impl process_self_bindings process_deps key =
-  let (command, iface, source) = key in
-  let impls = lookup_impl (iface, source) in
+  let (command, iface) = key in
+  let impls = lookup_impl iface in
   let commands = impls#get_commands command in
   let make_provides_command (_impl, elem) =
     (** [var] will be true iff this <command> is selected. *)
@@ -490,7 +485,7 @@ let make_commands_clause sat lookup_impl process_self_bindings process_deps key 
 (** Starting from [root_req], explore all the feeds, commands and implementations we might need, adding
  * all of them to [sat_problem]. *)
 let build_problem impl_provider root_req sat ~closest_match =
-  (* For each (iface, command, source) we have a list of implementations (or commands). *)
+  (* For each (iface, command) we have a list of implementations (or commands). *)
   let impl_cache = ImplCache.create () in
   let command_cache = CommandCache.create () in
 
@@ -499,8 +494,8 @@ let build_problem impl_provider root_req sat ~closest_match =
   (* Handle <replaced-by> conflicts after building the problem. *)
   let replacements = ref [] in
 
-  let rec add_impls_to_cache (iface_uri, source) =
-    let clause, impls = make_impl_clause sat ~closest_match replacements impl_provider iface_uri ~source in
+  let rec add_impls_to_cache iface_uri =
+    let clause, impls = make_impl_clause sat ~closest_match replacements impl_provider iface_uri in
     (clause, fun () ->
       impls |> List.iter (fun (impl_var, impl) ->
         require_machine_group impl_var impl;
@@ -577,11 +572,11 @@ let do_solve (impl_provider:Impl_provider.impl_provider) root_req ~closest_match
                 None
               ) else (
                 let dep_iface = dep.Feed.dep_iface in
-                match find_undecided @@ ReqIface (dep_iface, false) with
+                match find_undecided @@ ReqIface dep_iface with
                 | Some lit -> Some lit
                 | None ->
                     (* Command dependencies next *)
-                    let check_command_dep name = find_undecided @@ ReqCommand (name, dep_iface, false) in
+                    let check_command_dep name = find_undecided @@ ReqCommand (name, dep_iface) in
                     Support.Utils.first_match check_command_dep dep.Feed.dep_required_commands
               )
               in
@@ -589,7 +584,7 @@ let do_solve (impl_provider:Impl_provider.impl_provider) root_req ~closest_match
             | Some lit -> Some lit
             | None ->   (* All dependencies checked; now to the impl (if we're a <command>) *)
                 match req with
-                | ReqCommand (_command, iface, source) -> find_undecided @@ ReqIface (iface, source)
+                | ReqCommand (_command, iface) -> find_undecided @@ ReqIface iface
                 | ReqIface _ -> None     (* We're not a <command> *)
       ) in
     find_undecided root_req in
@@ -610,8 +605,8 @@ let do_solve (impl_provider:Impl_provider.impl_provider) root_req ~closest_match
           let impls = impl_clauses |> ImplCache.bindings |> List.filter was_selected in
           get_selections dep_in_use root_req impls commands |> Selections.create
 
-        method get_selected ~source iface =
-          ImplCache.get (iface, source) impl_clauses
+        method get_selected iface =
+          ImplCache.get iface impl_clauses
           |> pipe_some (fun candidates ->
               match candidates#get_selected with
               | Some (_lit, impl) when impl != dummy_impl -> Some impl
@@ -647,11 +642,12 @@ let get_root_requirements config requirements =
     machine_ranks = Arch.get_machine_ranks ~multiarch machine;
     languages = config.langs;
     allowed_uses = use;
+    source = source;
   }) in
 
   let root_req = match command with
-  | Some command -> ReqCommand (command, interface_uri, source)
-  | None -> ReqIface (interface_uri, source) in
+  | Some command -> ReqCommand (command, interface_uri)
+  | None -> ReqIface interface_uri in
 
   (scope_filter, root_req)
 

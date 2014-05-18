@@ -41,6 +41,7 @@ type scope_filter = {
   machine_ranks : int Support.Common.StringMap.t;
   languages : int Support.Locale.LangMap.t;
   allowed_uses : Support.Common.StringSet.t;
+  source : bool option;
 }
 
 type candidates = {
@@ -53,7 +54,7 @@ class type impl_provider =
   object
     (** Return all the implementations of this interface (including from feeds).
         Most preferred implementations should come first. *)
-    method get_implementations : General.iface_uri -> source:bool -> candidates
+    method get_implementations : General.iface_uri -> candidates
 
     (** Should the solver consider this dependency? *)
     method is_dep_needed : Feed.dependency -> bool

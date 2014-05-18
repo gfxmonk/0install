@@ -58,6 +58,7 @@ type scope_filter = {
   machine_ranks : int StringMap.t;
   languages : int Support.Locale.LangMap.t;
   allowed_uses : StringSet.t;                         (* deprecated *)
+  source : bool option;
 }
 
 type candidates = {
@@ -70,7 +71,7 @@ class type impl_provider =
   object
     (** Return all the implementations of this interface (including from feeds).
         Most preferred implementations should come first. *)
-    method get_implementations : iface_uri -> source:bool -> candidates
+    method get_implementations : iface_uri -> candidates
 
     (** Should the solver consider this dependency? *)
     method is_dep_needed : Feed.dependency -> bool
@@ -79,7 +80,7 @@ class type impl_provider =
   end
 
 class default_impl_provider config (feed_provider : Feed_provider.feed_provider) (scope_filter:scope_filter) =
-  let {extra_restrictions; os_ranks; machine_ranks; languages = wanted_langs; allowed_uses} = scope_filter in
+  let {extra_restrictions; os_ranks; machine_ranks; languages = wanted_langs; allowed_uses; source = want_source} = scope_filter in
 
   (* This shouldn't really be mutable, but ocaml4po causes trouble if we pass it in the constructor. *)
   let watch_iface = ref None in
@@ -113,7 +114,7 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
 
     method extra_restrictions = scope_filter.extra_restrictions
 
-    method get_implementations iface ~source:want_source =
+    method get_implementations iface =
       let get_feed_if_useful {Feed.feed_src; Feed.feed_os; Feed.feed_machine; Feed.feed_langs; Feed.feed_type = _} =
         try
           ignore feed_langs; (* Maybe later... *)
@@ -124,8 +125,14 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
             | Some os -> StringMap.mem os os_ranks) &&
             (match feed_machine with
             | None -> true
-            | Some machine when want_source -> machine = "src"
-            | Some machine -> StringMap.mem machine machine_ranks) in
+            | Some machine -> (
+                let is_src () = machine = "src" in
+                let is_arch () = StringMap.mem machine machine_ranks in
+                match want_source with
+                  | Some true -> is_src ()
+                  | Some false -> is_arch ()
+                  | None -> is_src () || is_arch ())
+            ) in
           if is_useful then feed_provider#get_feed feed_src
           else None
         with Safe_exception _ as ex ->
@@ -303,20 +310,26 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
       let machine_ok impl =
         match impl.Feed.machine with
         | None -> true
+        | Some "src" -> true
         | Some required_machine -> StringMap.mem required_machine machine_ranks in
 
       let check_acceptability impl =
         let stability = impl.Feed.stability in
         let is_source = impl.Feed.machine = Some "src" in
+        let (only_source, only_binary) = (match want_source with
+          | Some true -> (true, false)
+          | Some false -> (false, true)
+          | None -> (false, false)
+        ) in
 
         match user_restrictions with
         | Some r when not (r#meets_restriction impl) -> `User_restriction_rejects r
         | _ ->
             if stability <= Buggy then `Poor_stability
             else if not (os_ok impl) then `Incompatible_OS
-            else if want_source && not is_source then `Not_source
-            else if not (want_source) && is_source then `Not_binary
-            else if not want_source && not (machine_ok impl) then `Incompatible_machine
+            else if only_source && not is_source then `Not_source
+            else if only_binary && is_source then `Not_binary
+            else if not only_source && not (machine_ok impl) then `Incompatible_machine
             (* Acceptable if we've got it already or we can get it *)
             else if is_available impl then `Acceptable
             (* It's not cached, but might still be OK... *)

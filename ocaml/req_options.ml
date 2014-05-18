@@ -67,12 +67,14 @@ let parse_update_options ?(update=true) options requirements =
     | `Cpu v            -> r := {!r with cpu = empty_to_opt v}
     | `Os v             -> r := {!r with os = empty_to_opt v}
     | `SelectCommand v  -> r := {!r with command = empty_to_opt v}
-    | `Source when not update -> r := {!r with source = true}
-    | `Source when !r.source -> ()
-    | `Source ->
-          (** Partly because it doesn't make much sense, and partly because you
-              can't undo it, as there's no --not-source option. *)
-          raise_safe "Can't update from binary to source type!"
+    | `Source v         -> r := {!r with source = v}
+    (* TODO the old `Source code was as below. I can't figure out why it was this way... *)
+    (* | `Source when not update -> r := {!r with source = true} *)
+    (* | `Source when !r.source -> () *)
+    (* | `Source -> *)
+    (*       (** Partly because it doesn't make much sense, and partly because you *)
+    (*           can't undo it, as there's no --not-source option. *) *)
+    (*       raise_safe "Can't update from binary to source type!" *)
   );
 
   !r
@@ -89,7 +91,11 @@ let to_options requirements =
   let version_for (iface, expr) = ["--version-for"; iface; expr] in
 
   List.concat @@ [
-    if requirements.source then ["--source"] else [];
+    [match requirements.source with
+      | Some true -> "--source"
+      | Some false -> "--binary"
+      | None -> "--autocompile"
+    ];
     opt_arg "--message" requirements.message;
     opt_arg "--cpu" requirements.cpu;
     opt_arg "--os" requirements.os;

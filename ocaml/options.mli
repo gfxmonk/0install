@@ -30,7 +30,7 @@ type other_req_option = [
   | `SelectCommand of string
   | `Cpu of string
   | `Os of string
-  | `Source
+  | `Source of bool option
 ]
 
 type select_option = [

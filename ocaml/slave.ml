@@ -93,11 +93,18 @@ let parse_requirements json_assoc =
       value
     with Not_found -> `Null in
 
+  let pop_d name default =
+    try
+      let value = Hashtbl.find table name in
+      Hashtbl.remove table name;
+      value
+    with Not_found -> default in
+
   let reqs =
     Zeroinstall.Requirements.({
       interface_uri = pop "interface" |> J.Util.to_string;
       command = pop "command" |> J.Util.to_string_option;
-      source = pop "source" |> J.Util.to_bool_option |> default false;
+      source = pop_d "source" (`Bool false) |> J.Util.to_bool_option;
       extra_restrictions = pop "extra_restrictions" |> parse_restrictions;
       os = pop "os" |> J.Util.to_string_option;
       cpu = pop "cpu" |> J.Util.to_string_option;

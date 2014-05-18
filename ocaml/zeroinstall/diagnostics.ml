@@ -13,7 +13,7 @@ module U = Support.Utils
 
 module SelMap = Map.Make (
   struct
-    type t = (iface_uri * bool)
+    type t = iface_uri
     let compare = compare
   end
 )
@@ -57,7 +57,7 @@ let describe_problem impl = function
   | `DiagnosticsFailure msg -> spf "Reason for rejection unknown: %s" msg
 
 (* Add a textual description of this component's report to [buf]. *)
-let format_report buf (iface_uri, _source) component =
+let format_report buf iface_uri component =
   let prefix = ref "- " in
 
   let add fmt =
@@ -176,7 +176,7 @@ let find_component key report =
 let find_component_ex key report =
   match find_component key report with
   | Some c -> c
-  | None -> raise_safe "Can't find component %s!" (fst key)
+  | None -> raise_safe "Can't find component %s!" key
 
 (* Did any dependency of [impl] prevent it being selected?
    This can only happen if a component conflicts with something more important
@@ -188,7 +188,7 @@ let find_component_ex key report =
    to {A1, B1, D1}. Then we can't choose C1 because we prefer to keep D1. *)
 let get_dependency_problem report impl =
   let check_dep dep =
-    match find_component (dep.Feed.dep_iface, false) report with
+    match find_component dep.Feed.dep_iface report with
     | None -> None      (* Not in the selections => can't be part of a conflict *)
     | Some required_component ->
         match required_component#impl with
@@ -204,7 +204,7 @@ let get_dependency_problem report impl =
     of the required interface were rejected. *)
 let examine_dep requiring_iface requiring_impl report dep =
   let other_iface = dep.Feed.dep_iface in
-  match find_component (other_iface, false) report with
+  match find_component other_iface report with
   | None -> ()
   | Some required_component ->
       if dep.Feed.dep_restrictions <> [] then (
@@ -224,14 +224,14 @@ let examine_dep requiring_iface requiring_impl report dep =
       )
 
 (* Find all restrictions that are in play and affect this interface *)
-let examine_selection report (iface_uri, source) component =
+let examine_selection report iface_uri component =
   (* Note any conflicts caused by <replaced-by> elements *)
   let () =
     match component#replacement with
-    | Some replacement when SelMap.mem (replacement, source) report -> (
+    | Some replacement when SelMap.mem replacement report -> (
         component#note (ReplacedByConflict replacement);
         component#reject_all (`ConflictsInterface replacement);
-        match find_component (replacement, source) report with
+        match find_component replacement report with
         | Some replacement_component ->
             replacement_component#note (ReplacesConflict iface_uri);
             replacement_component#reject_all (`ConflictsInterface iface_uri)
@@ -255,22 +255,21 @@ let reject_if_unselected _key component =
 
 (* Check for user-supplied restrictions *)
 let examine_extra_restrictions report extra_restrictions =
-  let process ~source iface restriction =
+  let process iface restriction =
     try
-      match find_component (iface, source) report with
+      match find_component iface report with
       | None -> ()
       | Some component ->
           component#note (UserRequested restriction);
           component#apply_restrictions [restriction]
     with Not_found -> () in
 
-  StringMap.iter (process ~source:false) extra_restrictions;
-  StringMap.iter (process ~source:true) extra_restrictions
+  StringMap.iter process extra_restrictions
 
 (** If we wanted a command on the root, add that as a restriction. *)
 let process_root_req report = function
-  | Solver.ReqCommand (root_command, root_iface, source) ->
-      let component = find_component_ex (root_iface, source) report in
+  | Solver.ReqCommand (root_command, root_iface) ->
+      let component = find_component_ex root_iface report in
       component#filter_impls (fun impl ->
         if StringMap.mem root_command Feed.(impl.props.commands) then None
         else Some (`MissingCommand root_command)
@@ -304,12 +303,12 @@ let get_failure_report (result:Solver.result) : component SelMap.t =
   let root_req = result#requirements in
 
   let report =
-    let get_selected map ((iface, source) as key, selected_candidate) =
+    let get_selected map (iface as key, selected_candidate) =
       match selected_candidate with
       | None -> map    (* Not part of the (dummy) solution *)
       | Some (diagnostics, impl) ->
           let impl = if impl.Feed.parsed_version = Versions.dummy then None else Some impl in
-          let impl_candidates = impl_provider#get_implementations iface ~source in
+          let impl_candidates = impl_provider#get_implementations iface in
           let component = new component impl_candidates diagnostics impl in
           SelMap.add key component map in
     List.fold_left get_selected SelMap.empty impls in
@@ -472,8 +471,8 @@ let justify_decision config feed_provider requirements q_iface q_impl =
       inherit default_impl_provider config feed_provider scope_filter as super
       initializer super#set_watch_iface q_iface
 
-      method! get_implementations requested_iface ~source:want_source =
-        let c = super#get_implementations requested_iface ~source:want_source in
+      method! get_implementations requested_iface =
+        let c = super#get_implementations requested_iface in
         if requested_iface <> q_iface then c
         else (
           candidates := c.impls;

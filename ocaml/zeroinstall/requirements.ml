@@ -10,7 +10,7 @@ open Support.Common
 type t = {
   interface_uri : iface_uri;
   command : string option;
-  source : bool;
+  source : bool option;
   extra_restrictions : string StringMap.t;  (* iface -> range *)
   os : string option;
   cpu : string option;
@@ -20,7 +20,7 @@ type t = {
 let default_requirements interface_uri = {
   interface_uri;
   command = Some "run";
-  source = false;
+  source = Some false;
   os = None;
   cpu = None;
   message = None;
@@ -50,7 +50,7 @@ let parse_requirements json =
       | "not_before" -> not_before := to_string_option_or_empty value
       | "interface_uri" -> r := {!r with interface_uri = to_string value}
       | "command" -> r := {!r with command = to_string_option value}
-      | "source" -> r := {!r with source = to_bool value}
+      | "source" -> r := {!r with source = to_bool_option value}
       | "extra_restrictions" -> r := {!r with extra_restrictions = (parse_extra value)}
       | "os" -> r := {!r with os = to_string_option value}
       | "cpu" ->  r := {!r with cpu = to_string_option value}
@@ -87,7 +87,7 @@ let to_json reqs =
   } = reqs in
   `Assoc ([
     ("interface_uri", `String interface_uri);
-    ("source", `Bool source);
+    ("source", (match source with None -> `Null | Some b -> `Bool b));
     ("extra_restrictions", `Assoc (StringMap.map_bindings (fun k v -> (k, `String v)) extra_restrictions));
   ] @ List.concat [
     maybe "command" command;

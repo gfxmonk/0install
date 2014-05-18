@@ -115,7 +115,9 @@ let generic_select_options : (_, _) opt_spec list = [
   ([      "--not-before"],  1, i_ "minimum version to choose",         new one_arg SimpleVersion @@ fun v -> `NotBefore v);
   ([      "--os"],          1, i_ "target operation system type",      new one_arg OsType @@ fun o -> `Os o);
   (["-r"; "--refresh"],     0, i_ "refresh all used interfaces",       new ambiguous_no_arg `Refresh no_arg_reader);
-  (["-s"; "--source"],      0, i_ "select source code",                new no_arg @@ `Source);
+  (["-s"; "--source"],      0, i_ "select source code",                new no_arg @@ `Source (Some true));
+  (["-b"; "--binary"],      0, i_ "ignore source implementations",     new no_arg @@ `Source (Some false));
+  ([      "--autocompile"], 0, i_ "select best version; compiling as necessary", new no_arg @@ `Source None);
   ([      "--version"],     1, i_ "specify version constraint (e.g. '3' or '3..')", new ambiguous_version_arg read_version_option);
   ([      "--version-for"], 2, i_ "set version constraints for a specific interface", parse_version_for);
 ]
