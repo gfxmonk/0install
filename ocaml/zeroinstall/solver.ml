@@ -63,13 +63,14 @@ let dummy_impl =
     machine = None;
     stability = Testing;
     props = {
-      attrs = AttrMap.empty;
+      attrs = AttrMap.singleton "id" "[dummy]";
       requires = [];
       commands = StringMap.empty;   (* (not used; we can provide any command) *)
       bindings = [];
     };
     parsed_version = Versions.dummy;
     impl_type = `local_impl "/dummy";
+    impl_mode = `immediate;
   }
 
 (** A fake <command> used to generate diagnostics if the solve fails. *)
@@ -261,71 +262,80 @@ let get_selections dep_in_use root_req impls commands =
     Hashtbl.add commands_needed iface command_name in
   List.iter check_command commands;
 
+  let process_impl ~impl ~commands iface =
+    let attrs = Feed.(impl.props.attrs)
+      |> AttrMap.remove ("", FeedAttr.stability)
+
+      (* Replaced by <command> *)
+      |> AttrMap.remove ("", FeedAttr.main)
+      |> AttrMap.remove ("", FeedAttr.self_test)
+
+      |> AttrMap.add_no_ns "interface" iface in
+
+    let attrs =
+      if Some iface = AttrMap.get_no_ns FeedAttr.from_feed attrs then (
+        (* Don't bother writing from-feed attr if it's the same as the interface *)
+        AttrMap.remove ("", FeedAttr.from_feed) attrs
+      ) else attrs in
+
+    let child_nodes = ref [] in
+    if impl != dummy_impl then (
+      (* let commands = Hashtbl.find_all commands_needed iface in *)
+      let commands = List.sort compare commands in
+
+      let copy_elem elem =
+        (* Copy elem into parent (and strip out <version> elements). *)
+        let open Qdom in
+        let imported = {elem with
+          child_nodes = List.filter (fun c -> ZI.tag c <> Some "version") elem.child_nodes;
+        } in
+        child_nodes := imported :: !child_nodes in
+
+      let add_command name =
+        let command = Feed.get_command_ex name impl in
+        let command_elem = command.Feed.command_qdom in
+        let want_command_child elem =
+          (* We'll add in just the dependencies we need later *)
+          match ZI.tag elem with
+          | Some "requires" | Some "restricts" | Some "runner" -> false
+          | _ -> true
+        in
+        let child_nodes = List.filter want_command_child command_elem.Qdom.child_nodes in
+        let add_command_dep child_nodes dep =
+          if dep.Feed.dep_importance <> Feed.Dep_restricts && dep_in_use dep then
+            dep.Feed.dep_qdom :: child_nodes
+          else
+            child_nodes in
+        let child_nodes = List.fold_left add_command_dep child_nodes command.Feed.command_requires in
+        let command_elem = {command_elem with Qdom.child_nodes = child_nodes} in
+        copy_elem command_elem in
+      List.iter add_command commands;
+
+      List.iter copy_elem impl.Feed.props.Feed.bindings;
+      ListLabels.iter impl.Feed.props.Feed.requires ~f:(fun dep ->
+        if dep_in_use dep && dep.Feed.dep_importance <> Feed.Dep_restricts then
+          copy_elem (dep.Feed.dep_qdom)
+      );
+
+      impl.Feed.qdom |> ZI.iter ~name:"manifest-digest" copy_elem;
+    );
+    let sel = ZI.make
+      ~attrs
+      ~child_nodes:(List.rev !child_nodes)
+      ~source_hint:impl.Feed.qdom "selection" in
+    sel
+  in
+
   let selections = impls |> U.filter_map (fun (iface, impls) ->
     match impls#get_selected with
     | None -> None      (* This interface wasn't used *)
     | Some (_lit, impl) ->
-        let attrs = Feed.(impl.props.attrs)
-          |> AttrMap.remove ("", FeedAttr.stability)
-
-          (* Replaced by <command> *)
-          |> AttrMap.remove ("", FeedAttr.main)
-          |> AttrMap.remove ("", FeedAttr.self_test)
-
-          |> AttrMap.add_no_ns "interface" iface in
-
-        let attrs =
-          if Some iface = AttrMap.get_no_ns FeedAttr.from_feed attrs then (
-            (* Don't bother writing from-feed attr if it's the same as the interface *)
-            AttrMap.remove ("", FeedAttr.from_feed) attrs
-          ) else attrs in
-
-        let child_nodes = ref [] in
-        if impl != dummy_impl then (
-          let commands = Hashtbl.find_all commands_needed iface in
-          let commands = List.sort compare commands in
-
-          let copy_elem elem =
-            (* Copy elem into parent (and strip out <version> elements). *)
-            let open Qdom in
-            let imported = {elem with
-              child_nodes = List.filter (fun c -> ZI.tag c <> Some "version") elem.child_nodes;
-            } in
-            child_nodes := imported :: !child_nodes in
-
-          let add_command name =
-            let command = Feed.get_command_ex name impl in
-            let command_elem = command.Feed.command_qdom in
-            let want_command_child elem =
-              (* We'll add in just the dependencies we need later *)
-              match ZI.tag elem with
-              | Some "requires" | Some "restricts" | Some "runner" -> false
-              | _ -> true
-            in
-            let child_nodes = List.filter want_command_child command_elem.Qdom.child_nodes in
-            let add_command_dep child_nodes dep =
-              if dep.Feed.dep_importance <> Feed.Dep_restricts && dep_in_use dep then
-                dep.Feed.dep_qdom :: child_nodes
-              else
-                child_nodes in
-            let child_nodes = List.fold_left add_command_dep child_nodes command.Feed.command_requires in
-            let command_elem = {command_elem with Qdom.child_nodes = child_nodes} in
-            copy_elem command_elem in
-          List.iter add_command commands;
-
-          List.iter copy_elem impl.Feed.props.Feed.bindings;
-          ListLabels.iter impl.Feed.props.Feed.requires ~f:(fun dep ->
-            if dep_in_use dep && dep.Feed.dep_importance <> Feed.Dep_restricts then
-              copy_elem (dep.Feed.dep_qdom)
-          );
-
-          impl.Feed.qdom |> ZI.iter ~name:"manifest-digest" copy_elem;
-        );
-        let sel = ZI.make
-          ~attrs
-          ~child_nodes:(List.rev !child_nodes)
-          ~source_hint:impl.Feed.qdom "selection" in
-        Some sel
+        let sel = process_impl ~impl ~commands:(Hashtbl.find_all commands_needed iface) iface in
+        match impl.Feed.impl_mode with
+          | `immediate -> Some sel
+          | `requires_compilation source_impl ->
+            let source_impl = Lazy.force source_impl in
+            Some (process_impl ~impl:source_impl ~commands:["compile"] iface)
   ) in
 
   let root_attrs =
@@ -433,7 +443,7 @@ let process_dep sat lookup_impl lookup_command user_var dep =
   )
 
 (* Add the implementations of an interface to the ImplCache (called the first time we visit it). *)
-let make_impl_clause sat ~closest_match replacements impl_provider iface_uri =
+let make_impl_clause sat ~closest_match ~process_deps ~process_impl_deps replacements impl_provider iface_uri =
   let {Impl_provider.replacement; impls; rejects = _} = impl_provider#get_implementations iface_uri in
 
   (* Insert dummy_impl (last) if we're trying to diagnose a problem. *)
@@ -446,6 +456,48 @@ let make_impl_clause sat ~closest_match replacements impl_provider iface_uri =
         let var = S.add_variable sat (SolverData.ImplElem impl) in
         (var, impl)
     ) in
+
+  (* For each impl id, if there is both a `requires_compilation and `immediate
+   * version we will prefer the `requires_compilation version under the assumption
+   * that it's what the user is looking for. If it's selected, it
+   * also implies the requires_compilation version must be selected.
+   * XXX do we ever want just the immediate version when a requires_compilation version is present?
+   *)
+  let impls = impls
+    |> List.filter (fun (impl_var, impl) ->
+      impl == dummy_impl || (
+        let (impl_mode, impl_id) = Feed.ImplementationKey.of_impl impl in
+        if impl_mode = `immediate then (
+          let compiled_version = try Some (impls |> List.find (fun (_,candidate_impl) ->
+            candidate_impl != dummy_impl && (
+              Feed.ImplementationKey.of_impl candidate_impl = (`requires_compilation, impl_id)
+            )
+          )) with Not_found -> None
+          in
+          match compiled_version with
+          | Some (compiled_var, _compiled_impl) ->
+              log_debug "ignoring immediate impl %s because it has a requires_compilation version" (Feed.ImplementationKey.repr impl);
+              S.implies sat ~reason:"source for implementation" compiled_var [impl_var];
+              process_impl_deps impl_var impl;
+
+              (* If a source impl has a compile command, depend on it as well as the impl. *)
+              let compile_command = StringMap.find
+                "compile"
+                Feed.(impl.props.commands) in
+              let () = match compile_command with
+                | None -> ()
+                | Some command ->
+                    let command_var = S.add_variable sat (SolverData.CommandElem command) in
+                    S.implies sat ~reason:"compile command" compiled_var [command_var];
+                    process_deps command_var command.Feed.command_requires
+              in
+              false
+          | None -> true
+        ) else true
+      )
+    )
+  in
+
   let impl_clause = if impls <> [] then Some (S.at_most_one sat (List.map fst impls)) else None in
   let clause = new impl_candidates impl_clause impls in
 
@@ -459,9 +511,10 @@ let make_impl_clause sat ~closest_match replacements impl_provider iface_uri =
 
 (* Create a new CommandCache entry (called the first time we request this key). *)
 let make_commands_clause sat lookup_impl process_self_bindings process_deps key =
-  let (command, iface) = key in
+  let (command_name, iface) = key in
+
   let impls = lookup_impl iface in
-  let commands = impls#get_commands command in
+  let commands = impls#get_commands command_name in
   let make_provides_command (_impl, elem) =
     (** [var] will be true iff this <command> is selected. *)
     let var = S.add_variable sat (SolverData.CommandElem elem) in
@@ -495,14 +548,16 @@ let build_problem impl_provider root_req sat ~closest_match =
   let replacements = ref [] in
 
   let rec add_impls_to_cache iface_uri =
-    let clause, impls = make_impl_clause sat ~closest_match replacements impl_provider iface_uri in
+    let clause, impls = make_impl_clause sat ~closest_match ~process_deps ~process_impl_deps replacements impl_provider iface_uri in
     (clause, fun () ->
       impls |> List.iter (fun (impl_var, impl) ->
-        require_machine_group impl_var impl;
         process_self_bindings impl_var iface_uri Feed.(impl.props.bindings);
-        process_deps impl_var Feed.(impl.props.requires);
+        process_impl_deps impl_var impl
       )
     )
+  and process_impl_deps impl_var impl =
+    require_machine_group impl_var impl;
+    process_deps impl_var Feed.(impl.props.requires);
   and add_commands_to_cache key = make_commands_clause sat lookup_impl process_self_bindings process_deps key
   and lookup_impl key = ImplCache.lookup impl_cache add_impls_to_cache key
   and lookup_command key = CommandCache.lookup command_cache add_commands_to_cache key

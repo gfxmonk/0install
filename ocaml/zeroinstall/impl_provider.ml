@@ -89,11 +89,11 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
   let compare_for_watched_iface : (Feed.generic_implementation -> Feed.generic_implementation -> int * preferred_reason) option ref = ref None in
 
   let do_overrides overrides impls =
-    let do_override id impl =
+    let do_override (_, id) impl =
       match StringMap.find id overrides.Feed.user_stability with
       | Some stability -> {impl with Feed.stability = stability}
       | None -> impl in
-    StringMap.map_bindings do_override impls in
+    Feed.ImplementationMap.map_bindings do_override impls in
 
   let get_impls (feed, overrides) =
     do_overrides overrides @@ feed.Feed.implementations in

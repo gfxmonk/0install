@@ -32,7 +32,7 @@ let get_impl (feed_provider:Feed_provider.feed_provider) sel =
       | None -> None
       | Some (master_feed, _) ->
           let (impls, overrides) = feed_provider#get_distro_impls master_feed in
-          match StringMap.find id impls with
+          match F.ImplementationMap.find (`immediate, id) impls with
           | None -> None
           | Some impl -> Some ((impl :> F.generic_implementation), get_override overrides)
   )
@@ -40,7 +40,7 @@ let get_impl (feed_provider:Feed_provider.feed_provider) sel =
       match feed_provider#get_feed feed_url with
       | None -> None
       | Some (feed, overrides) ->
-          Some (StringMap.find_safe id feed.F.implementations, get_override overrides)
+          Some (F.ImplementationMap.find_safe (`immediate, id) feed.F.implementations, get_override overrides)
 
 let get_download_size info impl =
   match info.F.retrieval_methods with
@@ -112,7 +112,7 @@ let have_source_for feed_provider iface =
       match feed_provider#get_feed url with
       | None -> false
       | Some (feed, _overrides) ->
-          feed.Feed.implementations |> StringMap.exists (fun _id impl -> Feed.is_source impl)
+          feed.Feed.implementations |> F.ImplementationMap.exists (fun _id impl -> Feed.is_source impl)
     )
   )
 

@@ -75,3 +75,6 @@ val get_dependencies : restricts:bool -> Support.Qdom.element -> Support.Qdom.el
 (** Find the <runner> child of this element (selection or command), if any.
  * @raise Safe_exception if there are multiple runners. *)
 val get_runner : Support.Qdom.element -> Support.Qdom.element option
+
+(** Return whether any implementation has machine "src" (arch="*-src") *)
+val has_source_impls : t -> bool

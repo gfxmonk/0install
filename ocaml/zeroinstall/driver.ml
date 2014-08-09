@@ -44,12 +44,12 @@ let get_unavailable_selections config ?distro sels =
 (** Find a package implementation. Note: does not call [distro#check_for_candidates]. *)
 let find_distro_impl feed_provider id master_feed =
   let (impls, _) = feed_provider#get_distro_impls master_feed in
-  StringMap.find_nf id impls
+  Feed.ImplementationMap.find_nf (`immediate, id) impls
 
 (** Find a cached implementation. Not_found if the feed isn't cached or doesn't contain [id]. *)
 let find_zi_impl feed_provider id url =
   let (feed, _) = feed_provider#get_feed url |? lazy (raise Not_found) in
-  StringMap.find_nf id feed.Feed.implementations
+  Feed.ImplementationMap.find_nf (`immediate, id) feed.Feed.implementations
 
 module DownloadElt =
   struct

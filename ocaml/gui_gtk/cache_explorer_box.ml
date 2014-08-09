@@ -14,6 +14,7 @@ module FC = Zeroinstall.Feed_cache
 module FeedAttr = Zeroinstall.Constants.FeedAttr
 module Feed_url = Zeroinstall.Feed_url
 module Manifest = Zeroinstall.Manifest
+module ImplementationMap = Zeroinstall.Feed.ImplementationMap
 
 let rec size_of_item system path =
   match system#lstat path with
@@ -342,9 +343,11 @@ let open_cache_explorer config =
   let impl_of_digest = Hashtbl.create 1024 in
   !ok_feeds |> List.iter (fun feed ->
     (* For each implementation... *)
-    feed.F.implementations |> StringMap.iter (fun _id impl ->
-      match impl.F.impl_type with
-      | `cache_impl info ->
+    feed.F.implementations |> ImplementationMap.iter (fun _id impl ->
+      match (impl.F.impl_mode, impl.F.impl_type) with
+      | `requires_compilation _, _ -> ()
+        (* requires_compilation impls will also have an associated (cache_impl) version *)
+      | (_, `cache_impl info) ->
           (* For each digest... *)
           info.F.digests |> List.iter (fun parsed_digest ->
             let digest = Manifest.format_digest parsed_digest in
@@ -352,7 +355,7 @@ let open_cache_explorer config =
               Hashtbl.add impl_of_digest digest (feed, impl)
             )
           )
-      | `local_impl _ -> assert false
+      | (_, `local_impl _) | (_, `package_impl _) -> assert false
     );
   );
 

@@ -35,6 +35,10 @@ type impl_type =
   | `local_impl of Support.Common.filepath
   | `package_impl of package_impl ]
 
+and source_impl_type =
+  [ `cache_impl of cache_impl
+  | `local_impl of Support.Common.filepath ]
+
 type restriction = < meets_restriction : impl_type implementation -> bool; to_string : string >
 and binding = Support.Qdom.element
 and dependency = {
@@ -57,6 +61,10 @@ and properties = {
   bindings : binding list;
   commands : command Support.Common.StringMap.t;
 }
+and impl_mode = [
+  | `immediate
+  | `requires_compilation of source_impl_type implementation Lazy.t
+]
 and +'a implementation = {
   qdom : Support.Qdom.element;
   props : properties;
@@ -65,6 +73,7 @@ and +'a implementation = {
   machine : string option;      (* Required CPU; the second part of the 'arch' attribute. None for '*' *)
   parsed_version : Versions.parsed_version;
   impl_type : [< impl_type] as 'a;
+  impl_mode: impl_mode;
 }
 
 type generic_implementation = impl_type implementation
@@ -90,11 +99,28 @@ type feed_import = {
   feed_type : feed_type;
 }
 
+
+module ImplementationKey : sig
+  type t = (Impl_mode.t * string)
+  val compare : t -> t -> int
+  val eq : t -> t -> bool
+  val of_impl : generic_implementation -> t
+  val repr : generic_implementation -> string
+end
+
+module ImplementationMap : sig
+  include Map.S with type key = ImplementationKey.t
+  val map_bindings : (key -> 'a -> 'b) -> 'a t -> 'b list
+  val find_nf : key -> 'a t -> 'a
+  val find_safe : key -> 'a t -> 'a
+  val find : key -> 'a t -> 'a option
+end
+
 type feed = {
   url : Feed_url.non_distro_feed;
   root : Support.Qdom.element;
   name : string;
-  implementations : 'a. ([> `cache_impl of cache_impl | `local_impl of Support.Common.filepath] as 'a) implementation Support.Common.StringMap.t;
+  implementations : 'a. ([> `cache_impl of cache_impl | `local_impl of Support.Common.filepath] as 'a) implementation ImplementationMap.t;
   imported_feeds : feed_import list;    (* Always of type Feed_import here *)
 
   (* The URI of the interface that replaced the one with the URI of this feed's URL.
