@@ -20,7 +20,7 @@ type t = {
 let default_requirements interface_uri = {
   interface_uri;
   command = Some "run";
-  source = Some false;
+  source = None;
   os = None;
   cpu = None;
   message = None;
