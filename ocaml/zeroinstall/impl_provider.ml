@@ -58,6 +58,7 @@ type scope_filter = {
   machine_ranks : int StringMap.t;
   languages : int Support.Locale.LangMap.t;
   allowed_uses : StringSet.t;                         (* deprecated *)
+  autocompile : bool;
 }
 
 type candidates = {
@@ -79,7 +80,7 @@ class type impl_provider =
   end
 
 class default_impl_provider config (feed_provider : Feed_provider.feed_provider) (scope_filter:scope_filter) =
-  let {extra_restrictions; os_ranks; machine_ranks; languages = wanted_langs; allowed_uses} = scope_filter in
+  let {extra_restrictions; os_ranks; machine_ranks; languages = wanted_langs; allowed_uses; autocompile} = scope_filter in
 
   (* This shouldn't really be mutable, but ocaml4po causes trouble if we pass it in the constructor. *)
   let watch_iface = ref None in
@@ -88,11 +89,11 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
   let compare_for_watched_iface : (Feed.generic_implementation -> Feed.generic_implementation -> int * preferred_reason) option ref = ref None in
 
   let do_overrides overrides impls =
-    let do_override id impl =
+    let do_override (_, id) impl =
       match StringMap.find id overrides.Feed.user_stability with
       | Some stability -> {impl with Feed.stability = stability}
       | None -> impl in
-    StringMap.map_bindings do_override impls in
+    Feed.ImplementationMap.map_bindings do_override impls in
 
   let get_impls (feed, overrides) =
     do_overrides overrides @@ feed.Feed.implementations in
@@ -124,7 +125,7 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
             | Some os -> StringMap.mem os os_ranks) &&
             (match feed_machine with
             | None -> true
-            | Some machine when want_source -> machine = "src"
+            | Some "src" -> want_source || autocompile
             | Some machine -> StringMap.mem machine machine_ranks) in
           if is_useful then feed_provider#get_feed feed_src
           else None
@@ -322,14 +323,18 @@ class default_impl_provider config (feed_provider : Feed_provider.feed_provider)
             (* It's not cached, but might still be OK... *)
             else (
               let open Feed in
-              match impl.Feed.impl_type with
-              | `local_impl path -> `Missing_local_impl path
-              | `package_impl _ -> if config.network_use = Offline then `Not_cached_and_offline else `Acceptable
-              | `cache_impl {retrieval_methods = [];_} -> `No_retrieval_methods
-              | `cache_impl cache_impl ->
-                  if config.network_use <> Offline then `Acceptable   (* Can download it *)
-                  else if Feed.is_retrievable_without_network cache_impl then `Acceptable
-                  else `Not_cached_and_offline
+              match impl.Feed.impl_mode with
+              | `requires_compilation _ when autocompile = false -> `Not_binary
+              | _ -> begin
+                match impl.Feed.impl_type with
+                | `local_impl path -> `Missing_local_impl path
+                | `package_impl _ -> if config.network_use = Offline then `Not_cached_and_offline else `Acceptable
+                | `cache_impl {retrieval_methods = [];_} -> `No_retrieval_methods
+                | `cache_impl cache_impl ->
+                    if config.network_use <> Offline then `Acceptable   (* Can download it *)
+                    else if Feed.is_retrievable_without_network cache_impl then `Acceptable
+                    else `Not_cached_and_offline
+              end
             ) in
 
       let rejects = ref [] in

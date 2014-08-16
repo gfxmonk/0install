@@ -8,6 +8,7 @@ open General
 open Support
 open Support.Common
 module FeedAttr = Constants.FeedAttr
+module ImplementationMap = Feed.ImplementationMap
 module U = Support.Utils
 module Q = Support.Qdom
 
@@ -36,12 +37,15 @@ let get_matching_package_impls distro feed =
   );
   !best_impls
 
+(* distro packages only deal with immediate (not source) implementations *)
+let impl_mode = `immediate
+
 type query = {
   elem : Support.Qdom.element;      (* The <package-element> which generated this query *)
   package_name : string;            (* The 'package' attribute on the <package-element> *)
   elem_props : Feed.properties;     (* Properties on or inherited by the <package-element> - used by [add_package_implementation] *)
   feed : Feed.feed;                 (* The feed containing the <package-element> *)
-  results : Feed.distro_implementation Support.Common.StringMap.t ref;
+  results : Feed.distro_implementation ImplementationMap.t ref;
 }
 
 let make_query feed elem elem_props results = {
@@ -140,7 +144,8 @@ class virtual distribution config =
       impl_type = `package_impl {
         package_distro = "host";
         package_state = `installed;
-      }
+      };
+      impl_mode = impl_mode;
     } in
 
   let get_host_impls = function
@@ -252,11 +257,12 @@ class virtual distribution config =
         props = {props with attrs = !new_attrs};
         parsed_version = version;
         impl_type = `package_impl { package_state; package_distro = distro_name };
+        impl_mode = impl_mode;
       } in
 
       if package_state = `installed then fixup_main self#get_correct_main impl;
 
-      query.results := StringMap.add id impl !(query.results)
+      query.results := ImplementationMap.add (impl_mode, id) impl !(query.results)
 
     (** Test whether this <selection> element is still valid. The default implementation tries to load the feed from the
      * feed cache, calls [distribution#get_impls_for_feed] on it and checks whether the required implementation ID is in the
@@ -274,17 +280,17 @@ class virtual distribution config =
       | Some master_feed ->
           let wanted_id = ZI.get_attribute FeedAttr.id elem in
           let impls = self#get_impls_for_feed master_feed in
-          match StringMap.find wanted_id impls with
+          match ImplementationMap.find (impl_mode, wanted_id) impls with
           | None -> false
           | Some {Feed.impl_type = `package_impl {Feed.package_state; _}; _} -> package_state = `installed
 
     (** Get the native implementations (installed or candidates for installation) for this feed.
      * This default implementation finds the best <package-implementation> elements and calls [get_package_impls] on each one. *)
-    method get_impls_for_feed ?(init=StringMap.empty) (feed:Feed.feed) : Feed.distro_implementation StringMap.t =
+    method get_impls_for_feed ?(init=ImplementationMap.empty) (feed:Feed.feed) : Feed.distro_implementation ImplementationMap.t =
       let results = ref init in
 
       if check_host_python then (
-        get_host_impls feed.Feed.url |> List.iter (fun (id, impl) -> results := StringMap.add id impl !results)
+        get_host_impls feed.Feed.url |> List.iter (fun (id, impl) -> results := ImplementationMap.add (impl_mode, id) impl !results)
       );
 
       match get_matching_package_impls self feed with

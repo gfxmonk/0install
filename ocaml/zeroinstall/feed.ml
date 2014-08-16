@@ -11,6 +11,7 @@ module U = Support.Utils
 open Constants
 
 module AttrMap = Support.Qdom.AttrMap
+module Compile = Q.NsQuery(COMPILE_NS)
 
 type importance =
   | Dep_essential       (* Must select a version of the dependency *)
@@ -39,7 +40,11 @@ type cache_impl = {
 type impl_type =
   [ `cache_impl of cache_impl
   | `local_impl of filepath
-  | `package_impl of package_impl ]
+  | `package_impl of package_impl]
+
+and source_impl_type =
+  [ `cache_impl of cache_impl
+  | `local_impl of filepath]
 
 type restriction = < to_string : string; meets_restriction : impl_type implementation -> bool >
 
@@ -68,6 +73,14 @@ and properties = {
   commands : command StringMap.t;
 }
 
+and impl_mode = [
+  (* uses the same keys as Impl_mode.t, but
+   * additionally stores the source_impl for
+   * requires_compilation impls *)
+  | `immediate
+  | `requires_compilation of source_impl_type implementation Lazy.t
+]
+
 and +'a implementation = {
   qdom : Q.element;
   props : properties;
@@ -76,6 +89,7 @@ and +'a implementation = {
   machine : string option;      (* Required CPU; the second part of the 'arch' attribute. None for '*' *)
   parsed_version : Versions.parsed_version;
   impl_type : [< impl_type] as 'a;
+  impl_mode : impl_mode;
 }
 
 type generic_implementation = impl_type implementation
@@ -123,11 +137,52 @@ type feed_import = {
   feed_type: feed_type;
 }
 
+let get_attr_ex name impl =
+  AttrMap.get_no_ns name impl.props.attrs |? lazy (Q.raise_elem "Missing '%s' attribute for " name impl.qdom)
+
+module ImplementationKey = struct
+  type t = Impl_mode.t * string
+  let of_impl : generic_implementation -> t = fun impl ->
+    let id = get_attr_ex "id" impl in
+    match impl.impl_mode with
+      | `immediate -> (`immediate, id)
+      | `requires_compilation _ -> (`requires_compilation, id)
+
+  let compare a b =
+    (* order is arbitrary: sort immediate ahead of requires_compilation *)
+    match (a, b) with
+      | ((`immediate, _), (`requires_compilation, _)) -> -1
+      | ((`requires_compilation, _), (`immediate, _)) -> 1
+
+      | ((`immediate, a), (`immediate, b))
+      | ((`requires_compilation, a), (`requires_compilation, b)) ->
+          String.compare a b
+
+  let eq a b = compare a b = 0
+  let repr impl =
+    let (mode, id) = of_impl impl in
+    (Impl_mode.to_string mode) ^ " " ^ id
+end
+
+module ImplementationMap = struct
+  include Map.Make (ImplementationKey)
+  let find_nf = find
+  let find_safe key map = try find key map with Not_found ->
+    let (mode, id) = key in
+    raise_safe "BUG: %s implementation '%s' not found in StringMap!" (Impl_mode.to_string mode) id
+  let find key map = try Some (find key map) with Not_found -> None
+  let map_bindings fn map = fold (fun key value acc -> fn key value :: acc) map []
+end
+
+
 type feed = {
   url : Feed_url.non_distro_feed;
   root : Q.element;
   name : string;
-  implementations : 'a. ([> `cache_impl of cache_impl | `local_impl of Support.Common.filepath] as 'a) implementation StringMap.t;
+  implementations : 'a. (
+    [> `cache_impl of cache_impl
+    | `local_impl of Support.Common.filepath
+    ] as 'a) implementation ImplementationMap.t;
   imported_feeds : feed_import list;
 
   (* The URI of the interface that replaced the one with the URI of this feed's URL.
@@ -164,8 +219,6 @@ let make_distribtion_restriction distros =
     method to_string = "distribution:" ^ distros
   end
 
-let get_attr_ex name impl =
-  AttrMap.get_no_ns name impl.props.attrs |? lazy (Q.raise_elem "Missing '%s' attribute for " name impl.qdom)
 
 let parse_version_element elem =
   let before = ZI.get_attribute_opt "before" elem in
@@ -292,10 +345,28 @@ let rec filter_if_0install_version node =
   }
 
 let parse_implementations (system:system) url root local_dir =
-  let implementations = ref StringMap.empty in
+  let implementations = ref ImplementationMap.empty in
   let package_implementations = ref [] in
 
-  let process_impl node (state:properties) =
+  let root_attrs = AttrMap.empty
+    |> AttrMap.add_no_ns FeedAttr.stability value_testing
+    |> AttrMap.add_no_ns FeedAttr.from_feed url in
+
+  (* 'main' on the <interface> (deprecated) *)
+  let root_commands = match ZI.get_attribute_opt FeedAttr.main root with
+    | None -> StringMap.empty
+    | Some path ->
+        let new_command = make_command ~source_hint:root "run" path in
+        StringMap.singleton "run" new_command in
+
+  let root_state = {
+    attrs = root_attrs;
+    bindings = [];
+    commands = root_commands;
+    requires = [];
+  } in
+
+  let rec process_impl ?(mode=`immediate) node (state:properties) =
     let s = ref state in
 
     let set_attr name value =
@@ -324,7 +395,7 @@ let parse_implementations (system:system) url root local_dir =
               if Support.Utils.starts_with id "/" || Support.Utils.starts_with id "." then
                 use id in
 
-    if StringMap.mem id !implementations then
+    if ImplementationMap.mem (mode, id) !implementations then
       Q.raise_elem "Duplicate ID '%s' in:" id node;
     (* version-modifier *)
     AttrMap.get_no_ns FeedAttr.version_modifier !s.attrs
@@ -363,88 +434,114 @@ let parse_implementations (system:system) url root local_dir =
       stability;
       parsed_version = Versions.parse_version (get_prop FeedAttr.version);
       impl_type;
+      impl_mode = `immediate;
     } in
-    implementations := StringMap.add id impl !implementations
-  in
 
-  let rec process_group state (group:Q.element) =
+    let impl = if mode = `immediate
+      then impl
+      else { impl with
+        machine = None;
+        (* using `lazy` means this will work as long as source_impl isn't used until after
+         * all impls are parsed. XXX can we do this immediately rather than relying on lazy eval? *)
+        impl_mode = `requires_compilation (lazy (match !implementations |> ImplementationMap.find_safe (`immediate, id) with
+          (* we know `source_impl` will be of source_impl_type, this
+          * match is just to convince the compiler *)
+          | {impl_type = #source_impl_type; _} as impl -> impl
+          | _ -> assert false
+        ));
+      } in
+      
+    implementations := ImplementationMap.add (mode, id) impl !implementations;
+
+    if machine = Some "src" then begin match StringMap.find "compile" !s.commands with
+      | Some command ->
+        assert (mode = `immediate);
+        command.command_qdom |> Compile.iter ~name:"implementation" (fun child ->
+          (* synthesize a post-compiled implementation *)
+          let compiled_state = {
+            attrs = !s.attrs;
+            requires = !s.requires @ command.command_requires;
+            bindings = !s.bindings @ command.command_bindings;
+            commands = StringMap.empty;
+          } in
+
+          (* copy retrieval-related info from source impl *)
+          let retrieval_methods = List.filter Recipe.is_retrieval_method node.Q.child_nodes in
+          let child = { child with Q.child_nodes = child.Q.child_nodes @ retrieval_methods } in
+
+          let synthetic_impl = ZI.make
+            ~source_hint:child
+            ~attrs:(compiled_state.attrs |> AttrMap.add_all child.Q.attrs)
+            ~child_nodes:child.Q.child_nodes
+            "implementation" in
+          process_group_elem ~mode:`requires_compilation compiled_state synthetic_impl
+        )
+      | None -> ()
+    end
+
+  and process_group_elem ?mode state item =
+        let s = ref state in
+        (* We've found a group or implementation. Scan for dependencies,
+            bindings and commands. Doing this here means that:
+            - We can share the code for groups and implementations here.
+            - The order doesn't matter, because these get processed first.
+            A side-effect is that the document root cannot contain these. *)
+
+        (* Upgrade main='...' to <command name='run' path='...'> etc *)
+        let handle_old_command attr_name command_name =
+          match ZI.get_attribute_opt attr_name item with
+          | None -> ()
+          | Some path ->
+              let new_command = make_command ~source_hint:item command_name path in
+              s := {!s with commands = StringMap.add command_name new_command !s.commands} in
+        handle_old_command FeedAttr.main "run";
+        handle_old_command FeedAttr.self_test "test";
+
+        item.Q.attrs |> AttrMap.get (COMPILE_NS.ns, "command") |> if_some (fun command ->
+          let new_command = make_command ~source_hint:item "compile" ~new_attr:"shell-command" command in
+          s := {!s with commands = StringMap.add "compile" new_command !s.commands}
+        );
+
+        let new_bindings = ref [] in
+
+        item |> ZI.iter (fun child ->
+          match ZI.tag child with
+          | Some "requires" | Some "restricts" ->
+              let req = parse_dep local_dir child in
+              s := {!s with requires = req :: !s.requires}
+          | Some "command" ->
+              let command_name = ZI.get_attribute "name" child in
+              s := {!s with commands = StringMap.add command_name (parse_command local_dir child) !s.commands};
+          | Some tag when Binding.is_binding tag ->
+              new_bindings := child :: !new_bindings
+          | _ -> ()
+        );
+
+        if !new_bindings <> [] then
+          s := {!s with bindings = !s.bindings @ (List.rev !new_bindings)};
+
+        let new_attrs = !s.attrs |> AttrMap.add_all item.Q.attrs in
+
+        s := {!s with
+          attrs = new_attrs;
+          requires = !s.requires;
+        };
+
+        begin match ZI.tag item with
+        | Some "group" -> process_group !s item
+        | Some "implementation" -> process_impl ?mode item !s
+        | Some "package-implementation" -> package_implementations := (item, !s) :: !package_implementations
+        | _ -> assert false
+        end;
+
+  and process_group state (group:Q.element) =
     group |> ZI.iter (fun item ->
       match ZI.tag item with
-      | Some "group" | Some "implementation" | Some "package-implementation" -> (
-          let s = ref state in
-          (* We've found a group or implementation. Scan for dependencies,
-             bindings and commands. Doing this here means that:
-             - We can share the code for groups and implementations here.
-             - The order doesn't matter, because these get processed first.
-             A side-effect is that the document root cannot contain these. *)
-
-          (* Upgrade main='...' to <command name='run' path='...'> etc *)
-          let handle_old_command attr_name command_name =
-            match ZI.get_attribute_opt attr_name item with
-            | None -> ()
-            | Some path ->
-                let new_command = make_command ~source_hint:item command_name path in
-                s := {!s with commands = StringMap.add command_name new_command !s.commands} in
-          handle_old_command FeedAttr.main "run";
-          handle_old_command FeedAttr.self_test "test";
-
-          item.Q.attrs |> AttrMap.get (COMPILE_NS.ns, "command") |> if_some (fun command ->
-            let new_command = make_command ~source_hint:item "compile" ~new_attr:"shell-command" command in
-            s := {!s with commands = StringMap.add "compile" new_command !s.commands}
-          );
-
-          let new_bindings = ref [] in
-
-          item |> ZI.iter (fun child ->
-            match ZI.tag child with
-            | Some "requires" | Some "restricts" ->
-                let req = parse_dep local_dir child in
-                s := {!s with requires = req :: !s.requires}
-            | Some "command" ->
-                let command_name = ZI.get_attribute "name" child in
-                s := {!s with commands = StringMap.add command_name (parse_command local_dir child) !s.commands}
-            | Some tag when Binding.is_binding tag ->
-                new_bindings := child :: !new_bindings
-            | _ -> ()
-          );
-
-          if !new_bindings <> [] then
-            s := {!s with bindings = !s.bindings @ (List.rev !new_bindings)};
-
-          let new_attrs = !s.attrs |> AttrMap.add_all item.Q.attrs in
-
-          s := {!s with
-            attrs = new_attrs;
-            requires = !s.requires;
-          };
-
-          match ZI.tag item with
-          | Some "group" -> process_group !s item
-          | Some "implementation" -> process_impl item !s
-          | Some "package-implementation" -> package_implementations := (item, !s) :: !package_implementations
-          | _ -> assert false
-      )
-      | _ -> ()
+        | Some "group" | Some "implementation" | Some "package-implementation" ->
+          process_group_elem state item
+        | _ -> ()
     )
   in
-
-  let root_attrs = AttrMap.empty
-    |> AttrMap.add_no_ns FeedAttr.stability value_testing
-    |> AttrMap.add_no_ns FeedAttr.from_feed url in
-
-  (* 'main' on the <interface> (deprecated) *)
-  let root_commands = match ZI.get_attribute_opt FeedAttr.main root with
-    | None -> StringMap.empty
-    | Some path ->
-        let new_command = make_command ~source_hint:root "run" path in
-        StringMap.singleton "run" new_command in
-
-  let root_state = {
-    attrs = root_attrs;
-    bindings = [];
-    commands = root_commands;
-    requires = [];
-  } in
   process_group root_state root;
 
   (!implementations, !package_implementations)
@@ -538,7 +635,7 @@ let parse system root feed_local_path =
 
 (* Get all the implementations (note: only sorted by ID) *)
 let get_implementations feed =
-  StringMap.map_bindings (fun _k impl -> impl) feed.implementations
+  ImplementationMap.map_bindings (fun _k impl -> impl) feed.implementations
 
 let is_source impl = impl.machine = Some "src"
 
